@@ -1,16 +1,17 @@
 # govern
 
-A policy enforcement layer that sits between AI agents and the infrastructure they act on.
+Non-cooperative policy enforcement for AI agents: govern wraps the actual client or tool call an agent makes, so there's no `audit()` hook for the agent to just skip.
 
-## The design decision
+Per-call checks only ever see one agent's one action. govern also watches for coordinated behavior across agents — the starter policy ships a commented-out example that alerts when more than 3 distinct agents read `*customer_pii*` within an hour, a pattern none of them would trip individually.
 
-Most agent-guardrail prototypes expose an `audit()` function the agent is supposed to call before doing something dangerous. That only works if the agent cooperates — which is exactly the assumption you cannot make. It's a logging convention, not a control.
+```bash
+pip install govern-agent
+govern init            # write a starter policy (rules + an aggregate_rules example)
+govern demo            # watch a scripted agent get blocked, live
+govern dashboard       # pip install "govern-agent[dashboard]" first — see it happen
+```
 
-`govern` wraps the client, the tool function, or the subprocess call instead. The agent doesn't get a choice about whether policy runs, because govern owns the only path to the resource.
-
-Policy itself is data — a YAML file a customer can edit, review, and commit — not `if` statements in Python.
-
-Unlike per-call policy engines, govern can also catch coordinated behavior across multiple agents — five individually-authorized actions that combine into something none of them should have been allowed to do alone, like five agents each reading a different shard of a sensitive dataset until the union reconstructs full access. `aggregate_rules` in the policy watch for exactly this — see the commented-out example in the starter policy (`govern init`), and `## Policy` below for the full schema.
+Why it's built this way: `## Design decisions` below. Full command set: `## CLI Reference`.
 
 ## Install
 
@@ -55,6 +56,16 @@ def drop_table(table): ...
 # 3. replace subprocess.run
 govern.run("terraform apply -auto-approve")
 ```
+
+## Design decisions
+
+Most agent-guardrail prototypes expose an `audit()` function the agent is supposed to call before doing something dangerous. That only works if the agent cooperates — which is exactly the assumption you cannot make. It's a logging convention, not a control.
+
+`govern` wraps the client, the tool function, or the subprocess call instead. The agent doesn't get a choice about whether policy runs, because govern owns the only path to the resource.
+
+Policy itself is data — a YAML file a customer can edit, review, and commit — not `if` statements in Python.
+
+The cross-agent detection mentioned at the top isn't a separate bolt-on: `aggregate_rules` are validated by the same policy loader as `rules`, evaluated by the same detector in live enforcement, `policy simulate`, and the dashboard — see `### aggregate_rules` under `## Policy` below for the schema.
 
 ## Policy
 
