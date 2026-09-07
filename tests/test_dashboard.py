@@ -174,6 +174,51 @@ def test_agents_splits_granted_and_refused_approvals(tmp_path: Path) -> None:
     assert agent_d["approvals_refused"] == 1
 
 
+def test_agents_require_approval_is_an_overlay_not_a_third_bucket(tmp_path: Path) -> None:
+    """Locks in a deliberate design decision, not just a classification.
+
+    require_approval always resolves synchronously in Governor.evaluate()
+    before the event is ever written (see engine.py) — there is no
+    deferred/async approval path in this codebase, so a require_approval
+    event is never actually "pending" by the time it reaches the audit
+    log. Splitting it into a third bucket mutually exclusive with
+    allowed/blocked would relabel already-resolved outcomes as pending,
+    which is less accurate, not more. allowed/blocked must always
+    partition total_actions completely; require_approval/approvals_* are
+    an overlay on top, not a third slice of the same pie.
+    """
+    now = time.time()
+    entries = [
+        {
+            "action": "s3:PutObject", "resource": "prod-billing", "effect": "require_approval",
+            "allowed": True, "reason": "needs approval (human approval granted)",
+            "rule_id": "approve-prod-writes", "severity": "medium", "mode": "enforce",
+            "agent_id": "agent-e", "environment": "production", "session_id": "s6",
+            "timestamp": now - 5, "metadata": {"approval": "granted"},
+        },
+        {
+            "action": "k8s:ScaleDeployment", "resource": "checkout", "effect": "require_approval",
+            "allowed": False, "reason": "needs approval (human approval refused)",
+            "rule_id": "approve-prod-writes", "severity": "medium", "mode": "enforce",
+            "agent_id": "agent-e", "environment": "production", "session_id": "s6",
+            "timestamp": now - 3, "metadata": {"approval": "refused"},
+        },
+        {
+            "action": "s3:ListBuckets", "resource": "*", "effect": "allow", "allowed": True,
+            "reason": "read", "rule_id": "allow-reads", "severity": "info", "mode": "enforce",
+            "agent_id": "agent-e", "environment": "production", "session_id": "s6",
+            "timestamp": now - 1, "metadata": {},
+        },
+    ]
+    path = tmp_path / "audit.jsonl"
+    _write_log(path, entries)
+    agent_e = {a["agent_id"]: a for a in TestClient(create_app(audit_log=path)).get("/api/agents").json()["agents"]}["agent-e"]
+
+    assert agent_e["total_actions"] == 3
+    assert agent_e["allowed"] + agent_e["blocked"] == agent_e["total_actions"]
+    assert agent_e["require_approval"] == 2  # counted again inside allowed/blocked, not separately
+
+
 def test_stats_respects_since_hours_window(client: TestClient) -> None:
     body = client.get("/api/stats", params={"since_hours": 0.0001, "bucket_minutes": 60}).json()
     assert body["buckets"] == []
