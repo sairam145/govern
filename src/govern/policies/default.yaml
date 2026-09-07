@@ -1,0 +1,95 @@
+# govern starter policy
+#
+# Rules are matched with glob patterns against three fields:
+#   actions      "<service>:<Operation>"  e.g. s3:DeleteBucket, shell:exec
+#   resources    whatever the call targets e.g. arn:aws:s3:::prod-billing
+#   environments the environment passed to govern.init()
+#
+# Precedence: deny > require_approval > allow. Anything that matches no
+# rule falls through to default_effect.
+
+version: 1
+default_effect: deny
+
+rules:
+  - id: allow-reads
+    effect: allow
+    severity: info
+    description: Read-only operations are safe by default.
+    actions:
+      - "*:Get*"
+      - "*:List*"
+      - "*:Describe*"
+      - "*:Head*"
+      - "*:Read*"
+    resources: ["*"]
+
+  - id: allow-nonprod-writes
+    effect: allow
+    severity: low
+    description: Agents may write freely outside production.
+    actions: ["*"]
+    resources: ["*"]
+    environments: ["development", "dev", "staging", "test", "sandbox"]
+
+  - id: approve-prod-writes
+    effect: require_approval
+    severity: medium
+    description: Any mutation in production needs a human in the loop.
+    actions:
+      - "*:Create*"
+      - "*:Update*"
+      - "*:Put*"
+      - "*:Modify*"
+      - "*:Apply*"
+      - "*:Scale*"
+    resources: ["*"]
+    environments: ["production", "prod"]
+
+  - id: deny-destructive-prod
+    effect: deny
+    severity: critical
+    description: Never let an agent destroy production resources.
+    actions:
+      - "*:Delete*"
+      - "*:Destroy*"
+      - "*:Terminate*"
+      - "*:Remove*"
+      - "*:Drop*"
+    resources: ["*"]
+    environments: ["production", "prod"]
+
+  - id: deny-iam-changes
+    effect: deny
+    severity: critical
+    description: Privilege escalation is out of scope for an agent, anywhere.
+    actions:
+      - "iam:*"
+      - "rbac:*"
+      - "*:AttachPolicy"
+      - "*:PutRolePolicy"
+      - "*:CreateAccessKey"
+    resources: ["*"]
+    environments: ["*"]
+
+  - id: deny-shell-recursive-delete
+    effect: deny
+    severity: critical
+    description: Catch the classic shell footguns regardless of environment.
+    actions: ["shell:exec"]
+    resources:
+      - "*rm -rf*"
+      - "*mkfs*"
+      - "*dd if=*of=/dev/*"
+      - "*:(){ :|:& };:*"
+    environments: ["*"]
+
+  - id: deny-state-file-writes
+    effect: deny
+    severity: high
+    description: Terraform state corruption is unrecoverable and silent.
+    actions: ["*:Write*", "*:Put*", "*:Delete*", "file:*"]
+    resources:
+      - "*terraform.tfstate*"
+      - "*.tfstate.backup"
+    environments: ["*"]
