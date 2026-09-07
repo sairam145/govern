@@ -26,7 +26,9 @@ class AgentRecord:
     sessions: set = field(default_factory=set)
     total: int = 0
     blocked: int = 0
+    require_approval_total: int = 0
     approvals_granted: int = 0
+    approvals_refused: int = 0
     first_seen: float = 0.0
     last_seen: float = 0.0
     modes: set = field(default_factory=set)
@@ -84,8 +86,17 @@ def build_fleet(
         rec.last_seen = max(rec.last_seen, ts)
 
         metadata = entry.get("metadata") or {}
-        if metadata.get("approval") == "granted":
-            rec.approvals_granted += 1
+        approval_outcome = metadata.get("approval")
+        if approval_outcome is not None:
+            # require_approval is a request classification, not an outcome —
+            # the same rule can grant one call and refuse another for the
+            # same agent, so allowed/blocked (below) stays the ground truth
+            # while this makes the approval gate itself visible.
+            rec.require_approval_total += 1
+            if approval_outcome == "granted":
+                rec.approvals_granted += 1
+            else:
+                rec.approvals_refused += 1
 
         was_blocked = (not entry.get("allowed")) or metadata.get("would_have_blocked")
         if was_blocked:
@@ -175,7 +186,8 @@ def render_detail(rec: AgentRecord) -> None:
     print(f"  sessions:      {len(rec.sessions)}")
     print(f"  actions:       {rec.total}")
     print(f"  blocked:       {rec.blocked} ({rec.risk_rate:.0f}%)")
-    print(f"  approvals granted: {rec.approvals_granted}")
+    print(f"  require_approval hits: {rec.require_approval_total} "
+          f"(granted: {rec.approvals_granted}, refused: {rec.approvals_refused})")
     print(f"  worst severity:    {rec.worst_severity}")
     print(f"  first seen:    {_ago(rec.first_seen)}")
     print(f"  last seen:     {_ago(rec.last_seen)}")
@@ -204,7 +216,9 @@ def to_json(fleet: Dict[str, AgentRecord]) -> str:
             "actions": rec.total,
             "blocked": rec.blocked,
             "risk_rate_pct": round(rec.risk_rate, 1),
+            "require_approval_total": rec.require_approval_total,
             "approvals_granted": rec.approvals_granted,
+            "approvals_refused": rec.approvals_refused,
             "worst_severity": rec.worst_severity,
             "first_seen": rec.first_seen,
             "last_seen": rec.last_seen,

@@ -37,7 +37,8 @@ classifiers = [
 dependencies = ["PyYAML>=6.0"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "build>=1.0", "twine>=5.0"]
+dashboard = ["fastapi>=0.100", "uvicorn>=0.23"]
+dev = ["pytest>=7.0", "build>=1.0", "twine>=5.0", "fastapi>=0.100", "uvicorn>=0.23", "httpx>=0.24"]
 
 [project.urls]
 Homepage = "https://github.com/sairam145/govern"
@@ -52,7 +53,7 @@ govern = "govern.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-govern = ["policies/*.yaml", "py.typed"]
+govern = ["policies/*.yaml", "py.typed", "static/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

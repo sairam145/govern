@@ -1,0 +1,46 @@
+name: publish
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: pip install build twine
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      # --- Active method: PyPI API token via twine -----------------------
+      # Trusted publishing (OIDC) is not yet configured for this project on
+      # pypi.org, so this uses a stored PYPI_API_TOKEN repo secret instead.
+      #
+      # To switch to trusted publishing once it's set up (pypi.org ->
+      # project -> Publishing -> add a GitHub publisher for this repo and
+      # this workflow filename):
+      #   1. delete this "Publish with twine" step
+      #   2. add `permissions: id-token: write` to this job
+      #   3. uncomment the "Publish with trusted publishing" step below
+      - name: Publish with twine
+        run: twine upload dist/*
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
+      # --- Fallback method: trusted publishing (OIDC), no stored secret --
+      # - name: Publish with trusted publishing
+      #   uses: pypa/gh-action-pypi-publish@release/v1

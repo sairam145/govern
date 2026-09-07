@@ -91,6 +91,19 @@ Any rule with `effect: require_approval` calls the handler. The default handler 
 
 Every decision is appended as JSONL to `.govern/audit.jsonl` (override with `GOVERN_AUDIT_LOG`). An unwritable log never takes the agent down.
 
+## Dashboard
+
+```bash
+pip install "govern-agent[dashboard]"
+govern dashboard --port 8000
+```
+
+A local, read-only view over `.govern/audit.jsonl` — a live activity feed, a blocked-vs-allowed timeline, and a per-agent summary table. It only ever tails the log; it never writes to it. `fastapi`/`uvicorn` are an optional extra, not part of the core install.
+
+```bash
+govern --audit-log path/to/audit.jsonl dashboard --port 9000
+```
+
 ## Status
 
 v0.1.0 prototype. The API is intentionally small so the core idea can move without breaking the surface.

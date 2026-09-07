@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>govern dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2e38;
+    --text: #e6e8eb;
+    --muted: #8a8f98;
+    --allow: #3fb950;
+    --deny: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 24px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 12px; }
+  .grid {
+    display: grid;
+    grid-template-columns: 1.3fr 1fr;
+    gap: 16px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .panel h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin: 0 0 12px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .allow { color: var(--allow); }
+  .deny { color: var(--deny); }
+  .approve { color: #d29922; }
+  #feed { max-height: 420px; overflow-y: auto; }
+  #feed div.row { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+  #feed .action { font-weight: 600; }
+  #feed .meta { color: var(--muted); }
+  .full { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+  <h1>govern dashboard</h1>
+  <p class="sub">read-only view over the audit log · polling every 4s</p>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>activity feed</h2>
+      <div id="feed">loading…</div>
+    </div>
+
+    <div class="panel">
+      <h2>blocked vs allowed</h2>
+      <canvas id="chart" height="220"></canvas>
+    </div>
+
+    <div class="panel full">
+      <h2>agents</h2>
+      <table>
+        <thead>
+          <tr><th>agent</th><th>actions</th><th>allowed</th><th>blocked</th><th>approvals (granted/refused)</th><th>last seen</th></tr>
+        </thead>
+        <tbody id="agents-body"><tr><td colspan="6">loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+<script>
+const EFFECT_CLASS = { allow: "allow", deny: "deny", require_approval: "approve" };
+
+function fmtTime(ts) {
+  if (!ts) return "never";
+  return new Date(ts * 1000).toLocaleTimeString();
+}
+
+async function refreshFeed() {
+  const res = await fetch("/api/events?limit=25");
+  const body = await res.json();
+  const feed = document.getElementById("feed");
+  feed.innerHTML = body.events.map(e => `
+    <div class="row">
+      <span class="action ${EFFECT_CLASS[e.effect] || ''}">${e.effect.toUpperCase()}</span>
+      &nbsp;${e.action} &rarr; ${e.resource}
+      <div class="meta">${e.agent_id} · ${e.environment} · ${fmtTime(e.timestamp)}</div>
+    </div>
+  `).join("") || "<p class=\"sub\">no events yet</p>";
+}
+
+async function refreshAgents() {
+  const res = await fetch("/api/agents");
+  const body = await res.json();
+  const tbody = document.getElementById("agents-body");
+  tbody.innerHTML = body.agents.map(a => `
+    <tr>
+      <td>${a.agent_id}</td>
+      <td>${a.total_actions}</td>
+      <td class="allow">${a.allowed}</td>
+      <td class="deny">${a.blocked}</td>
+      <td>${a.require_approval ? `${a.approvals_granted}/${a.approvals_refused}` : "—"}</td>
+      <td>${fmtTime(a.last_seen)}</td>
+    </tr>
+  `).join("") || "<tr><td colspan=\"6\">no agents seen yet</td></tr>";
+}
+
+let chart;
+async function refreshStats() {
+  const res = await fetch("/api/stats?since_hours=24&bucket_minutes=60");
+  const body = await res.json();
+  const labels = body.buckets.map(b => new Date(b.timestamp * 1000).toLocaleTimeString());
+  const allowed = body.buckets.map(b => b.allowed);
+  const blocked = body.buckets.map(b => b.blocked);
+
+  if (!chart) {
+    chart = new Chart(document.getElementById("chart"), {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [
+          { label: "allowed", data: allowed, backgroundColor: "#3fb950" },
+          { label: "blocked", data: blocked, backgroundColor: "#f85149" },
+        ],
+      },
+      options: {
+        responsive: true,
+        scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } },
+        plugins: { legend: { labels: { color: "#e6e8eb" } } },
+      },
+    });
+  } else {
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = allowed;
+    chart.data.datasets[1].data = blocked;
+    chart.update();
+  }
+}
+
+function refreshAll() {
+  refreshFeed();
+  refreshAgents();
+  refreshStats();
+}
+
+refreshAll();
+setInterval(refreshFeed, 4000);
+setInterval(refreshAgents, 10000);
+setInterval(refreshStats, 10000);
+</script>
+</body>
+</html>

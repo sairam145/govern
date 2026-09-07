@@ -122,6 +122,24 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return run_demo()
 
 
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+    except ImportError:
+        print(
+            "the dashboard needs optional dependencies: pip install govern-agent[dashboard]",
+            file=sys.stderr,
+        )
+        return 1
+    from .dashboard import create_app
+
+    path = Path(args.audit_log) if args.audit_log else default_audit_path()
+    app = create_app(audit_log=path)
+    print(f"[govern] dashboard on http://127.0.0.1:{args.port}  (reading {path})")
+    uvicorn.run(app, host="127.0.0.1", port=args.port)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="govern",
@@ -167,6 +185,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_demo = sub.add_parser("demo", help="run a scripted agent against the policy")
     p_demo.set_defaults(func=cmd_demo)
+
+    p_dashboard = sub.add_parser(
+        "dashboard",
+        help="launch a local read-only monitoring dashboard (requires the 'dashboard' extra)",
+    )
+    p_dashboard.add_argument("--port", type=int, default=8000)
+    p_dashboard.set_defaults(func=cmd_dashboard)
 
     return parser
 
