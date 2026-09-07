@@ -8,6 +8,7 @@ match and how to resolve precedence.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
@@ -23,9 +24,27 @@ PRECEDENCE = {"deny": 3, "require_approval": 2, "allow": 1}
 
 DEFAULT_POLICY_FILENAMES = ("govern.yaml", "govern.yml", ".govern.yaml")
 
+_DURATION_RE = re.compile(r"^(\d+)([smhd])$")
+_DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
 
 class PolicyError(Exception):
     """Raised when a policy file is malformed."""
+
+
+def parse_duration(value: str) -> float:
+    """"30s" -> 30.0, "10m" -> 600.0, "1h" -> 3600.0, "7d" -> 604800.0.
+
+    A shared parser for anything that needs a human-writable time window —
+    today that's the CLI's `policy simulate --since`; a future aggregate
+    rule's `window` field should reuse this rather than growing a second
+    duration parser.
+    """
+    match = _DURATION_RE.match(str(value).strip().lower())
+    if not match:
+        raise PolicyError(f"invalid duration '{value}'; expected e.g. '30s', '10m', '1h', '7d'")
+    amount, unit = match.groups()
+    return float(amount) * _DURATION_UNITS[unit]
 
 
 def _as_tuple(value: Any, fallback: Sequence[str] = ("*",)) -> tuple:

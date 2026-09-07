@@ -205,7 +205,11 @@ def render_detail(rec: AgentRecord) -> None:
     print()
 
 
-def to_json(fleet: Dict[str, AgentRecord]) -> str:
+def to_dicts(fleet: Dict[str, AgentRecord]) -> List[Dict[str, Any]]:
+    """Plain per-agent dicts, sorted by agent_id — the shape both the old
+    `govern agents --json` and the newer `govern agent list/inspect -o json`
+    serialize, so there's exactly one definition of what an agent summary
+    looks like as data."""
     payload = []
     for rec in sorted(fleet.values(), key=lambda r: r.agent_id):
         payload.append({
@@ -225,4 +229,8 @@ def to_json(fleet: Dict[str, AgentRecord]) -> str:
             "rule_hits": dict(rec.rule_hits),
             "recent_blocks": rec.recent_blocks,
         })
-    return json.dumps(payload, indent=2)
+    return payload
+
+
+def to_json(fleet: Dict[str, AgentRecord]) -> str:
+    return json.dumps(to_dicts(fleet), indent=2)

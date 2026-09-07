@@ -104,6 +104,58 @@ A local, read-only view over `.govern/audit.jsonl` — a live activity feed, a b
 govern --audit-log path/to/audit.jsonl dashboard --port 9000
 ```
 
+## CLI Reference
+
+Commands follow a Docker/kubectl-style noun-verb pattern. Every existing invocation below the line still works exactly as it always has — the noun-verb forms are additions, not replacements.
+
+| Command | What it does |
+|---|---|
+| `govern init` | write a starter policy file |
+| `govern check <action> [resource]` | evaluate one action against the policy |
+| `govern log` | read the audit log |
+| `govern demo` | run a scripted agent against the policy |
+| `govern dashboard` | launch the read-only monitoring dashboard |
+| `govern policy list` | show the active policy's rules |
+| `govern policy validate <file>` | schema-check a policy file, no side effects |
+| `govern policy diff <a> <b>` | structural diff between two policy files |
+| `govern policy apply <file>` | replace the active policy file (validated first, backed up) |
+| `govern policy simulate <file>` | replay audit history through a candidate policy |
+| `govern agent list` | every agent govern has seen |
+| `govern agent inspect <agent_id>` | one agent's full event history |
+| `govern completion bash\|zsh` | print a shell completion script |
+| *(legacy)* `govern policy` / `govern policy --validate` | unchanged — same output as always |
+| *(legacy)* `govern agents [--agent name]` | unchanged — same output as always |
+
+Read-only commands (`policy list`, `agent list`, `agent inspect`, `log`) take `-o table\|json`. `-o json` always wraps the payload in an envelope with a top-level `apiVersion: "govern/v1"`, so a future schema change won't silently break a script parsing it:
+
+```bash
+govern agent list -o json | jq '.agents[] | select(.blocked > 0)'
+```
+
+### Simulating a policy change before shipping it
+
+`policy simulate` never touches the real audit log, the active policy, or a live approval handler — it replays recorded history through a candidate policy file using the exact same rule-precedence logic (`deny > require_approval > allow`) that live enforcement uses, so what it predicts can't drift from what enforcement would actually do.
+
+```bash
+govern init tightened.yaml            # start from the current policy
+$EDITOR tightened.yaml                # add a rule, e.g. deny k8s:Scale* everywhere
+
+govern policy simulate tightened.yaml --since 7d
+#   CHANGED OUTCOMES (2)
+#     ALLOW -> DENY   k8s:ScaleDeployment -> checkout   agent=k8s-autoscaler   2026-09-01 09:14:02
+#         new rule: deny-k8s-scale [critical]
+#   6 unchanged event(s) (same outcome as recorded)
+#   new denials introduced: 1  (see --fail-on-new-blocks)
+
+# gate a CI job on it: fails the build if the new policy would introduce a new denial
+govern policy simulate tightened.yaml --since 7d --fail-on-new-blocks
+
+# happy with it? replace the active policy (validated + backed up first)
+govern policy apply tightened.yaml
+```
+
+`--against <path>` points at a different audit log than the configured one; `--since 24h|7d|30m` windows the replay; `--diff` prints only the changed events, skipping the unchanged-count summary, for piping into other tools.
+
 ## Status
 
 v0.1.0 prototype. The API is intentionally small so the core idea can move without breaking the surface.
