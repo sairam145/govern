@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .collusion import CollusionDetector
 from .fleet import read_entries
 from .policy import Policy
 
@@ -64,9 +65,9 @@ class SimulationResult:
     since_hours: Optional[float]
     total_events: int
     changed: List[ChangedEvent] = field(default_factory=list)
-    # Reserved for aggregate_rules-driven collusion alerts, which don't
-    # exist in this codebase yet. Kept in the schema now (always empty)
-    # so the "govern/v1" apiVersion doesn't have to change shape later.
+    # aggregate_rules that would have newly crossed threshold against this
+    # history, from replaying the real CollusionDetector — empty if the
+    # candidate policy has no aggregate_rules or none of them trip.
     collusion_alerts: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -86,13 +87,23 @@ def simulate(
     """Replay every event in audit_log through `policy`, read-only.
 
     Never writes to audit_log, never mutates policy, never calls an
-    approval handler.
+    approval handler. Also replays through a fresh CollusionDetector
+    built from policy.aggregate_rules — the exact same class live
+    enforcement uses, not a separate simulation-only implementation.
+    The detector's window math is relative to each event's own
+    timestamp, not wall-clock time, so replaying history in
+    chronological order (which read_entries naturally is, since the log
+    is append-only) is exactly as correct as feeding it live.
     """
     cutoff = time.time() - since_hours * 3600 if since_hours else None
     total = 0
     changed: List[ChangedEvent] = []
+    detector = CollusionDetector(policy.aggregate_rules)
+    triggered: Dict[tuple, Any] = {}
 
     for entry in read_entries(audit_log):
+        if entry.get("alert_type"):
+            continue  # our own annotations aren't replayable decisions
         ts = float(entry.get("timestamp") or 0)
         if cutoff and ts < cutoff:
             continue
@@ -118,12 +129,22 @@ def simulate(
                 new_severity=(new_rule.severity if new_rule else "medium"),
             ))
 
+        for result in detector.record(entry):
+            if result.triggered:
+                key = (result.rule_id, result.resource, result.environment)
+                triggered[key] = result  # keep the latest/peak snapshot
+
+    collusion_alerts = [
+        r.to_dict() for r in sorted(triggered.values(), key=lambda r: -r.count)
+    ]
+
     return SimulationResult(
         policy_source=policy.source,
         audit_source=str(audit_log),
         since_hours=since_hours,
         total_events=total,
         changed=changed,
+        collusion_alerts=collusion_alerts,
     )
 
 
@@ -137,15 +158,18 @@ def render_table(result: SimulationResult, diff_only: bool = False) -> None:
     since = f"last {result.since_hours:g}h" if result.since_hours else "all history"
     print(f"  since:    {since}\n")
 
-    if not result.changed:
+    if not result.changed and not result.collusion_alerts:
         print(f"no change — all {result.total_events} event(s) would produce the same outcome")
         return
 
-    print(f"CHANGED OUTCOMES ({len(result.changed)})")
-    for c in sorted(result.changed, key=lambda c: c.timestamp):
-        print(f"  {c.old_effect.upper()} -> {c.new_effect.upper()}   "
-              f"{c.action} -> {c.resource}   agent={c.agent_id}   {_fmt_ts(c.timestamp)}")
-        print(f"      new rule: {c.new_rule_id or '(default_effect)'} [{c.new_severity}]")
+    if result.changed:
+        print(f"CHANGED OUTCOMES ({len(result.changed)})")
+        for c in sorted(result.changed, key=lambda c: c.timestamp):
+            print(f"  {c.old_effect.upper()} -> {c.new_effect.upper()}   "
+                  f"{c.action} -> {c.resource}   agent={c.agent_id}   {_fmt_ts(c.timestamp)}")
+            print(f"      new rule: {c.new_rule_id or '(default_effect)'} [{c.new_severity}]")
+    else:
+        print("no per-call outcome changes")
 
     if not diff_only:
         print(f"\n  {result.unchanged_count} unchanged event(s) (same outcome as recorded)")
@@ -154,10 +178,13 @@ def render_table(result: SimulationResult, diff_only: bool = False) -> None:
             print(f"\n  new denials introduced: {len(result.new_denials)}  "
                   f"(see --fail-on-new-blocks)")
 
-        if result.collusion_alerts:
-            print("\nNEW COLLUSION ALERTS")
-            for alert in result.collusion_alerts:
-                print(f"  {alert}")
+    if result.collusion_alerts:
+        print("\nNEW COLLUSION ALERTS")
+        for alert in result.collusion_alerts:
+            print(f"  {alert['effect'].upper()}  {alert['rule_id']}   "
+                  f"{alert['resource']} ({alert['environment']})")
+            print(f"      {alert['count']}/{alert['threshold']} {alert['threshold_type']}"
+                  f"   agents: {', '.join(alert['agent_ids'])}")
 
 
 def to_dict(result: SimulationResult) -> Dict[str, Any]:

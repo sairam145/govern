@@ -19,15 +19,18 @@ from typing import Any, Dict, Optional
 from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse
 
+from .collusion import replay
 from .engine import default_audit_path
 from .fleet import build_fleet, read_entries
+from .policy import Policy
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 
-def create_app(audit_log: Optional[Path] = None) -> FastAPI:
+def create_app(audit_log: Optional[Path] = None, policy: Optional[Policy] = None) -> FastAPI:
     """Build the dashboard app, bound to one audit log path."""
     path = Path(audit_log) if audit_log else default_audit_path()
+    active_policy = policy or Policy.discover()
     app = FastAPI(title="govern dashboard")
 
     @app.get("/")
@@ -89,6 +92,8 @@ def create_app(audit_log: Optional[Path] = None) -> FastAPI:
         buckets: Dict[int, Dict[str, int]] = defaultdict(lambda: {"allowed": 0, "blocked": 0})
 
         for entry in read_entries(path):
+            if entry.get("alert_type"):
+                continue  # not a per-call decision, doesn't fit allowed/blocked
             ts = float(entry.get("timestamp") or 0)
             if ts < cutoff:
                 continue
@@ -105,17 +110,23 @@ def create_app(audit_log: Optional[Path] = None) -> FastAPI:
 
     @app.get("/api/cross-agent")
     def get_cross_agent(since_hours: float = 24.0) -> Dict[str, Any]:
-        """Scaffolding for a future collusion-detection view.
+        """Cross-agent activity: raw counts, plus actual triggered alerts.
 
-        Groups action counts by (resource, environment) across every
-        agent_id govern has seen in the window, so a later pass can flag
-        resources that many distinct agents are touching at once. This
-        endpoint only aggregates — it does not itself flag anything.
+        `groups` is unscored aggregation — action counts by (resource,
+        environment) across every agent_id in the window, with no rule
+        attached to any of it. `alerts` is different in kind: it's
+        active_alerts() from a CollusionDetector replayed against the
+        real audit log using the active policy's aggregate_rules — a
+        group only appears there if a configured rule's threshold is
+        actually crossed, not just because multiple agents touched the
+        same resource.
         """
         cutoff = time.time() - since_hours * 3600
         groups: Dict[tuple, Dict[str, Any]] = {}
 
         for entry in read_entries(path):
+            if entry.get("alert_type"):
+                continue
             ts = float(entry.get("timestamp") or 0)
             if ts < cutoff:
                 continue
@@ -127,12 +138,15 @@ def create_app(audit_log: Optional[Path] = None) -> FastAPI:
             group["count"] += 1
             group["agent_ids"].add(entry.get("agent_id", "unnamed-agent"))
 
+        detector = replay(path, active_policy.aggregate_rules)
+
         return {
             "since_hours": since_hours,
             "groups": [
                 {**g, "agent_ids": sorted(g["agent_ids"]), "distinct_agents": len(g["agent_ids"])}
                 for g in sorted(groups.values(), key=lambda g: -g["count"])
             ],
+            "alerts": detector.active_alerts(),
         }
 
     return app

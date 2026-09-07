@@ -93,3 +93,34 @@ rules:
       - "*terraform.tfstate*"
       - "*.tfstate.backup"
     environments: ["*"]
+
+# Aggregate rules catch what a per-call check can't: coordinated behavior
+# across multiple agents, where each individual call is authorized but
+# the combination isn't — e.g. five agents each reading a different
+# shard of a sensitive dataset, none crossing any per-agent limit, but
+# the union reconstructing full access.
+#
+# Matched the same way as rules above (actions/resources/environments
+# globs), plus:
+#   window     how far back to look, e.g. "10m", "1h", "24h"
+#   threshold  { type: distinct_agents | total_calls, max: N }
+#   effect     "alert" (log a collusion_alert entry, action proceeds) or
+#              "deny" (block the call that crosses the threshold)
+#
+# Empty by default — enabling one is a deliberate choice, not a starter
+# default, since what counts as "too many agents touching this" depends
+# on your own data and your own agents.
+#
+# Example:
+#   - id: too-many-readers-of-customer-pii
+#     effect: alert
+#     description: More than 3 distinct agents read customer_pii within an hour.
+#     actions: ["*:Get*", "*:List*", "*:Read*"]
+#     resources: ["*customer_pii*"]
+#     environments: ["production"]
+#     window: "1h"
+#     threshold:
+#       type: distinct_agents
+#       max: 3
+
+aggregate_rules: []

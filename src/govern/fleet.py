@@ -68,6 +68,12 @@ def build_fleet(
     fleet: Dict[str, AgentRecord] = {}
 
     for entry in read_entries(path):
+        if entry.get("alert_type"):
+            # A collusion alert isn't one agent's decision — it has no
+            # single agent_id/allowed outcome of its own — so it can't be
+            # rolled into a per-agent record without being miscounted
+            # under a fake "unnamed-agent" bucket.
+            continue
         ts = float(entry.get("timestamp") or 0)
         if cutoff and ts < cutoff:
             continue

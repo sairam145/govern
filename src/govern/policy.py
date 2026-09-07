@@ -18,6 +18,8 @@ import yaml
 
 EFFECTS = ("allow", "deny", "require_approval")
 SEVERITIES = ("info", "low", "medium", "high", "critical")
+AGGREGATE_EFFECTS = ("alert", "deny")
+THRESHOLD_TYPES = ("distinct_agents", "total_calls")
 
 # deny wins over require_approval wins over allow
 PRECEDENCE = {"deny": 3, "require_approval": 2, "allow": 1}
@@ -104,9 +106,82 @@ def _glob_any(value: str, patterns: Sequence[str]) -> bool:
     return any(fnmatch(value, str(p).lower()) for p in patterns)
 
 
+@dataclass(frozen=True)
+class AggregateRule:
+    """A cross-agent check: N distinct agents, or N total calls, against
+    matching actions/resources/environments within a rolling window.
+
+    Matched the same way as Rule (glob semantics via _glob_any); the
+    difference is what triggers it — a count over time across possibly
+    many agents, not a single call. See collusion.CollusionDetector for
+    the actual window/threshold tracking.
+    """
+
+    id: str
+    effect: str  # alert | deny
+    actions: tuple = ("*",)
+    resources: tuple = ("*",)
+    environments: tuple = ("*",)
+    window_seconds: float = 3600.0
+    threshold_type: str = "distinct_agents"
+    threshold_max: int = 1
+    description: str = ""
+
+    @classmethod
+    def from_dict(cls, raw: Dict[str, Any], index: int) -> "AggregateRule":
+        if not isinstance(raw, dict):
+            raise PolicyError(f"aggregate_rules #{index} is not a mapping")
+        rule_id = str(raw.get("id", f"aggregate-rule-{index}"))
+
+        effect = str(raw.get("effect", "")).lower()
+        if effect not in AGGREGATE_EFFECTS:
+            raise PolicyError(
+                f"aggregate rule '{rule_id}' has effect '{effect}'; "
+                f"expected one of {', '.join(AGGREGATE_EFFECTS)}"
+            )
+
+        window_raw = raw.get("window")
+        if not window_raw:
+            raise PolicyError(f"aggregate rule '{rule_id}' is missing 'window'")
+
+        threshold = raw.get("threshold")
+        if not isinstance(threshold, dict):
+            raise PolicyError(f"aggregate rule '{rule_id}' has no 'threshold' mapping")
+        threshold_type = str(threshold.get("type", "")).lower()
+        if threshold_type not in THRESHOLD_TYPES:
+            raise PolicyError(
+                f"aggregate rule '{rule_id}' has threshold type '{threshold_type}'; "
+                f"expected one of {', '.join(THRESHOLD_TYPES)}"
+            )
+        try:
+            threshold_max = int(threshold.get("max"))
+        except (TypeError, ValueError):
+            raise PolicyError(f"aggregate rule '{rule_id}' threshold.max must be an integer")
+
+        return cls(
+            id=rule_id,
+            effect=effect,
+            actions=_as_tuple(raw.get("actions")),
+            resources=_as_tuple(raw.get("resources")),
+            environments=_as_tuple(raw.get("environments")),
+            window_seconds=parse_duration(window_raw),
+            threshold_type=threshold_type,
+            threshold_max=threshold_max,
+            description=str(raw.get("description", "")),
+        )
+
+    def matches(self, action: str, resource: str, environment: str) -> bool:
+        return (
+            _glob_any(action, self.actions)
+            and _glob_any(resource, self.resources)
+            and _glob_any(environment, self.environments)
+        )
+
+
 @dataclass
 class Policy:
     rules: List[Rule] = field(default_factory=list)
+    aggregate_rules: List[AggregateRule] = field(default_factory=list)
     version: int = 1
     default_effect: str = "deny"
     source: str = "<inline>"
@@ -125,13 +200,33 @@ class Policy:
         if not isinstance(raw_rules, list):
             raise PolicyError(f"{source}: 'rules' must be a list")
         rules = [Rule.from_dict(r, i) for i, r in enumerate(raw_rules)]
+
+        raw_aggregate_rules = raw.get("aggregate_rules") or []
+        if not isinstance(raw_aggregate_rules, list):
+            raise PolicyError(f"{source}: 'aggregate_rules' must be a list")
+        aggregate_rules = [
+            AggregateRule.from_dict(r, i) for i, r in enumerate(raw_aggregate_rules)
+        ]
+
+        # One id namespace across rules and aggregate_rules — a rule and an
+        # aggregate rule sharing an id would make audit log entries and
+        # `govern policy diff` ambiguous about which one fired.
         seen = set()
         for rule in rules:
             if rule.id in seen:
                 raise PolicyError(f"{source}: duplicate rule id '{rule.id}'")
             seen.add(rule.id)
+        for rule in aggregate_rules:
+            if rule.id in seen:
+                raise PolicyError(
+                    f"{source}: duplicate id '{rule.id}' "
+                    f"(used by both rules and aggregate_rules)"
+                )
+            seen.add(rule.id)
+
         return cls(
             rules=rules,
+            aggregate_rules=aggregate_rules,
             version=int(raw.get("version", 1)),
             default_effect=default_effect,
             source=source,

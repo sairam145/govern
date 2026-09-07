@@ -1,4 +1,5 @@
 __pycache__/
-*.py[cod]
+*.pyc
 *.egg-info/
-.govern/audit.jsonl
+.govern/
+.venv/

@@ -10,6 +10,8 @@ Most agent-guardrail prototypes expose an `audit()` function the agent is suppos
 
 Policy itself is data — a YAML file a customer can edit, review, and commit — not `if` statements in Python.
 
+Unlike per-call policy engines, govern can also catch coordinated behavior across multiple agents — five individually-authorized actions that combine into something none of them should have been allowed to do alone, like five agents each reading a different shard of a sensitive dataset until the union reconstructs full access. `aggregate_rules` in the policy watch for exactly this — see the commented-out example in the starter policy (`govern init`), and `## Policy` below for the full schema.
+
 ## Install
 
 ```bash
@@ -71,6 +73,26 @@ rules:
 ```
 
 Matching is glob-based across three fields (`actions`, `resources`, `environments`). Precedence is **deny > require_approval > allow**; anything matching no rule falls through to `default_effect`. Policy is discovered like `.git` — `GOVERN_POLICY` env var, then `govern.yaml` walking up from cwd, then the bundled default.
+
+### aggregate_rules
+
+Regular `rules` only ever see one call at a time. `aggregate_rules` watch a rolling window across *all* agents for a count that crosses a threshold — distinct agents touching a resource, or total calls against it — and either log it or block the call that crosses the line:
+
+```yaml
+aggregate_rules:
+  - id: too-many-readers-of-customer-pii
+    effect: alert   # or "deny" to block the call that crosses the threshold
+    description: More than 3 distinct agents read customer_pii within an hour.
+    actions: ["*:Get*", "*:List*", "*:Read*"]
+    resources: ["*customer_pii*"]
+    environments: ["production"]
+    window: "1h"
+    threshold:
+      type: distinct_agents   # or "total_calls"
+      max: 3
+```
+
+Same glob matching as `rules`. Empty by default (`aggregate_rules: []`) — enabling one is a deliberate choice. `effect: alert` lets the action through and writes a separate `{"alert_type": "collusion"}` line to the audit log; `effect: deny` overrides the per-call decision and records both the original and final outcome. `govern policy simulate` and the dashboard's `/api/cross-agent` both replay history through the same detector, so you can see what an aggregate rule *would* have caught before turning it on.
 
 ## Modes
 

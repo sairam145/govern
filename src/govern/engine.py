@@ -15,10 +15,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from .collusion import CollusionDetector
 from .decision import Decision, PolicyViolation
 from .policy import Policy
 
 MODES = ("enforce", "monitor")
+
+_COLLUSION_DETECTOR: Optional[CollusionDetector] = None
 
 
 def default_audit_path() -> Path:
@@ -26,6 +29,31 @@ def default_audit_path() -> Path:
     if env:
         return Path(env)
     return Path.cwd() / ".govern" / "audit.jsonl"
+
+
+def _shared_collusion_detector(aggregate_rules) -> CollusionDetector:
+    """One CollusionDetector per process, shared across every Governor.
+
+    Cross-agent detection only means something if agents share state — a
+    single agent's own Governor never sees another agent's calls, and
+    each govern.init() call would otherwise wipe out what the previous
+    agent contributed. Rule *definitions* are refreshed on every init()
+    (last writer wins if two agents in one process run different
+    policies); the sliding-window state itself survives, since it
+    belongs to the wall-clock activity, not to any one session.
+    """
+    global _COLLUSION_DETECTOR
+    if _COLLUSION_DETECTOR is None:
+        _COLLUSION_DETECTOR = CollusionDetector(aggregate_rules)
+    else:
+        _COLLUSION_DETECTOR.set_rules(aggregate_rules)
+    return _COLLUSION_DETECTOR
+
+
+def reset_collusion_detector() -> None:
+    """Drop all in-memory collusion state. Mainly for tests and process restarts."""
+    global _COLLUSION_DETECTOR
+    _COLLUSION_DETECTOR = None
 
 
 def deny_approval(decision: Decision) -> bool:
@@ -66,6 +94,7 @@ class Governor:
         self.session_id = uuid.uuid4().hex[:12]
         self.started_at = time.time()
         self.decisions: list[Decision] = []
+        self.collusion = _shared_collusion_detector(self.policy.aggregate_rules)
 
     # -- core -------------------------------------------------------------
 
@@ -100,6 +129,31 @@ class Governor:
             decision.reason = (
                 f"{decision.reason} (human approval {decision.metadata['approval']})"
             )
+
+        for result in self.collusion.record(decision.to_dict()):
+            if not result.triggered:
+                continue
+            if result.effect == "deny":
+                original = {
+                    "effect": decision.effect,
+                    "allowed": decision.allowed,
+                    "rule_id": decision.rule_id,
+                }
+                decision.metadata["per_call_decision"] = original
+                decision.metadata["aggregate_rule"] = result.to_dict()
+                decision.allowed = False
+                decision.effect = "deny"
+                decision.rule_id = result.rule_id
+                decision.severity = "critical"
+                decision.reason = (
+                    f"per-call policy result was '{original['effect']}' "
+                    f"({'allowed' if original['allowed'] else 'blocked'}), but aggregate "
+                    f"rule '{result.rule_id}' crossed threshold ({result.count}/"
+                    f"{result.threshold} {result.threshold_type} within window; "
+                    f"agents involved: {', '.join(result.agent_ids)})"
+                )
+            elif result.effect == "alert":
+                self._record_collusion_alert(result)
 
         if self.mode == "monitor" and not decision.allowed:
             decision.metadata["would_have_blocked"] = True
@@ -141,6 +195,15 @@ class Governor:
 
     # -- internals --------------------------------------------------------
 
+    def _append(self, payload: Dict[str, Any]) -> None:
+        try:
+            self.audit_log.parent.mkdir(parents=True, exist_ok=True)
+            with self.audit_log.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, default=str) + "\n")
+        except OSError:
+            # An unwritable audit log must never take the agent down.
+            pass
+
     def _record(self, decision: Decision) -> None:
         self.decisions.append(decision)
         if not self.quiet:
@@ -149,10 +212,24 @@ class Governor:
                 marker = "WOULD-BLOCK "
             print(f"[govern] {marker}{decision.action} -> {decision.resource}"
                   f"{f' ({decision.rule_id})' if decision.rule_id else ''}")
-        try:
-            self.audit_log.parent.mkdir(parents=True, exist_ok=True)
-            with self.audit_log.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(decision.to_dict(), default=str) + "\n")
-        except OSError:
-            # An unwritable audit log must never take the agent down.
-            pass
+        self._append(decision.to_dict())
+
+    def _record_collusion_alert(self, result) -> None:
+        alert = {
+            "alert_type": "collusion",
+            "effect": "collusion_alert",
+            "rule_id": result.rule_id,
+            "resource": result.resource,
+            "environment": result.environment,
+            "threshold_type": result.threshold_type,
+            "count": result.count,
+            "threshold": result.threshold,
+            "agent_ids": result.agent_ids,
+            "session_id": self.session_id,
+            "timestamp": time.time(),
+        }
+        if not self.quiet:
+            print(f"[govern] COLLUSION ALERT  {result.rule_id}  {result.resource}"
+                  f"  {result.count}/{result.threshold} {result.threshold_type}"
+                  f"  agents={','.join(result.agent_ids)}")
+        self._append(alert)
