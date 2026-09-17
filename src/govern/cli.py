@@ -314,6 +314,16 @@ def cmd_policy_simulate(args: argparse.Namespace) -> int:
         print(f"invalid --since: {exc}", file=sys.stderr)
         return 1
 
+    # Warn if policy contains chain_rules — they are not evaluated by simulate
+    if policy.chain_rules:
+        count = len(policy.chain_rules)
+        rule_text = "rule" if count == 1 else "rules"
+        print(
+            f"[govern] WARNING: {count} chain_{rule_text} in this policy will NOT be evaluated.\n"
+            f"[govern] Chain rules require persistent cross-process chains (Phase 2).\n"
+            f"[govern] Simulate results reflect per-call and aggregate_rules only.\n"
+        )
+
     result = simulate(policy, audit_path, since_hours=since_hours)
 
     if args.output == "json":
