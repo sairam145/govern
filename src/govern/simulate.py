@@ -12,6 +12,12 @@ resolved into allow/deny — nothing here can honestly know how a live
 approval call would go for a hypothetical replay, and collapsing it into
 a boolean would misrepresent an unresolved case as a resolved one (the
 same mistake the dashboard's /api/agents aggregation used to make).
+
+PHASE 1 LIMITATION: Chain rules are NOT evaluated in simulate. Chains are
+in-memory per-Governor-instance; simulate creates fresh instances replaying
+JSONL, so chain context is lost. Only per-call rules and aggregate_rules
+are replayed. Phase 2 will add persistent chains + simulate integration.
+See CLAUDE.md for details.
 """
 
 from __future__ import annotations

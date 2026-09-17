@@ -55,14 +55,28 @@ Phase 2 (deferred): Persistent chain store (SQLite), cross-process linking, Clou
 ## Phase 1 scope (current work)
 
 - ActionChain reconstruction within a Governor instance (in-memory)
-- Chain-aware rule matching (if_previous conditions)
+- Chain-aware rule matching (if_previous conditions) in live enforcement only
 - Integration into Governor.evaluate()
-- One test scenario proving the concept
-- Dashboard/simulate integration deferred (they'll work automatically once the audit log includes chain context)
+- 8 comprehensive test scenarios proving the concept
+- **policy simulate does not evaluate chain rules** — see "Known Phase 1 limitation" below
+- Dashboard visualization deferred to Phase 2
 
-## Known limitations (document, do not solve in Phase 1)
+## Known Phase 1 limitations (document, do not solve now)
 
-- Chains do not persist across process restarts (Phase 2: SQLite backend)
-- Two Governor instances = two separate ChainRegistry instances (Phase 2: pass chain_id across process boundaries)
-- No external integrations (CloudTrail, k8s audit, Palo Alto) yet (Phase 2+)
-- Chain visualization in dashboard deferred (Phase 2)
+**Hard blockers for simulate + dashboard chain support:**
+- Audit log entries do not record chain context (step_id, initiated_by) — they're written by the Decision object, which doesn't know about the chain
+- `simulate` creates fresh Governor instances replaying JSONL; each gets a new in-memory ChainRegistry, so chains aren't reconstructed across the replay
+- Without persistent chain storage, step IDs from one run can't be passed to the next run or linked across processes
+
+**Result**: Chain rules only work in live enforcement (one Governor instance, in-memory chain state survives). `policy simulate` and the dashboard only see per-call and aggregate rules. This is acceptable for Phase 1 (proving the concept) but Phase 2 must solve it.
+
+**Phase 2 will add:**
+- Step IDs and `initiated_by` links recorded to audit log (in metadata or as top-level fields)
+- SQLite backend for persistent chains (`.govern/chains.db`)
+- `simulate` integration: when replaying, reconstruct chains from the audit log using step IDs
+- Dashboard chain visualization
+
+**Other Phase 1 limitations** (lower priority):
+- Chains do not persist across process restarts (fixed by SQLite in Phase 2)
+- Two Governor instances = two separate ChainRegistry instances (fixed by chain_id passing in Phase 2)
+- No external integrations (CloudTrail, k8s audit) yet (Phase 2+)
