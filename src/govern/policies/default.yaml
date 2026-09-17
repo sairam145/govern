@@ -124,3 +124,24 @@ rules:
 #       max: 3
 
 aggregate_rules: []
+
+# Chain-aware rules catch coordinated action sequences: patterns where each
+# individual action is authorized, but the combination requires a gate.
+# E.g., "if terraform was just run, require approval for production deletes."
+#
+# Matched the same way as rules (actions/resources/environments globs), plus:
+#   if_previous  { action: pattern, within: "5m" } — only apply if a previous
+#                action matching this occurred recently in the same chain
+#
+# Empty by default — enabling one is a deliberate choice, not a default.
+#
+# Example:
+#   - id: careful-after-terraform
+#     effect: require_approval
+#     description: Any production deletion after terraform needs a human gate.
+#     actions: ["*:Delete*", "*:Remove*", "*:Drop*"]
+#     resources: ["*"]
+#     environments: ["production"]
+#     if_previous: {action: "terraform:*", within: "5m"}
+
+chain_rules: []

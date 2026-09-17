@@ -178,10 +178,88 @@ class AggregateRule:
         )
 
 
+@dataclass(frozen=True)
+class ChainRule:
+    """A rule that checks coordinated action sequences.
+
+    Matches on this action like a regular rule (actions/resources/environments),
+    but only if a previous action matching if_previous occurred recently in the
+    same chain. Enables rules like "if terraform was just run, require approval
+    for destructive S3 operations."
+    """
+
+    id: str
+    effect: str  # allow | deny | require_approval
+    actions: tuple = ("*",)
+    resources: tuple = ("*",)
+    environments: tuple = ("*",)
+    if_previous: Optional[Dict[str, str]] = None  # {"action": "pattern", "within": "5m"}
+    severity: str = "medium"
+    description: str = ""
+
+    @classmethod
+    def from_dict(cls, raw: Dict[str, Any], index: int) -> "ChainRule":
+        if not isinstance(raw, dict):
+            raise PolicyError(f"chain_rules #{index} is not a mapping")
+
+        effect = str(raw.get("effect", "")).lower()
+        if effect not in EFFECTS:
+            raise PolicyError(
+                f"chain rule '{raw.get('id', index)}' has effect '{effect}'; "
+                f"expected one of {', '.join(EFFECTS)}"
+            )
+
+        severity = str(raw.get("severity", "medium")).lower()
+        if severity not in SEVERITIES:
+            raise PolicyError(
+                f"chain rule '{raw.get('id', index)}' has severity '{severity}'; "
+                f"expected one of {', '.join(SEVERITIES)}"
+            )
+
+        if_previous = raw.get("if_previous")
+        if if_previous:
+            if not isinstance(if_previous, dict):
+                raise PolicyError(f"chain rule '{raw.get('id', index)}' if_previous must be a mapping")
+            if_action = if_previous.get("action")
+            if_within = if_previous.get("within")
+            if not if_action or not if_within:
+                raise PolicyError(
+                    f"chain rule '{raw.get('id', index)}' if_previous must have 'action' and 'within'"
+                )
+            # validate within is parseable as a duration
+            try:
+                parse_duration(if_within)
+            except PolicyError as exc:
+                raise PolicyError(
+                    f"chain rule '{raw.get('id', index)}' if_previous.within: {exc}"
+                ) from exc
+            # keep if_previous as-is for use at match time
+            if_previous = dict(if_previous)
+
+        return cls(
+            id=str(raw.get("id", f"chain-rule-{index}")),
+            effect=effect,
+            actions=_as_tuple(raw.get("actions")),
+            resources=_as_tuple(raw.get("resources")),
+            environments=_as_tuple(raw.get("environments")),
+            if_previous=if_previous,
+            severity=severity,
+            description=str(raw.get("description", "")),
+        )
+
+    def matches(self, action: str, resource: str, environment: str) -> bool:
+        return (
+            _glob_any(action, self.actions)
+            and _glob_any(resource, self.resources)
+            and _glob_any(environment, self.environments)
+        )
+
+
 @dataclass
 class Policy:
     rules: List[Rule] = field(default_factory=list)
     aggregate_rules: List[AggregateRule] = field(default_factory=list)
+    chain_rules: List[ChainRule] = field(default_factory=list)
     version: int = 1
     default_effect: str = "deny"
     source: str = "<inline>"
@@ -208,9 +286,14 @@ class Policy:
             AggregateRule.from_dict(r, i) for i, r in enumerate(raw_aggregate_rules)
         ]
 
-        # One id namespace across rules and aggregate_rules — a rule and an
-        # aggregate rule sharing an id would make audit log entries and
-        # `govern policy diff` ambiguous about which one fired.
+        raw_chain_rules = raw.get("chain_rules") or []
+        if not isinstance(raw_chain_rules, list):
+            raise PolicyError(f"{source}: 'chain_rules' must be a list")
+        chain_rules = [ChainRule.from_dict(r, i) for i, r in enumerate(raw_chain_rules)]
+
+        # One id namespace across rules, aggregate_rules, and chain_rules — a rule
+        # sharing an id would make audit log entries and `govern policy diff`
+        # ambiguous about which one fired.
         seen = set()
         for rule in rules:
             if rule.id in seen:
@@ -223,10 +306,18 @@ class Policy:
                     f"(used by both rules and aggregate_rules)"
                 )
             seen.add(rule.id)
+        for rule in chain_rules:
+            if rule.id in seen:
+                raise PolicyError(
+                    f"{source}: duplicate id '{rule.id}' "
+                    f"(used by rules, aggregate_rules, or chain_rules)"
+                )
+            seen.add(rule.id)
 
         return cls(
             rules=rules,
             aggregate_rules=aggregate_rules,
+            chain_rules=chain_rules,
             version=int(raw.get("version", 1)),
             default_effect=default_effect,
             source=source,
