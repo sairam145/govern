@@ -447,6 +447,147 @@ _govern""")
     return 0
 
 
+def cmd_show_architecture(args: argparse.Namespace) -> int:
+    """Display how govern's policy enforcement architecture works."""
+
+    ascii_diagram = """\
+╔════════════════════════════════════════════════════════════════════════════════╗
+║                        GOVERN POLICY ENFORCEMENT ARCHITECTURE                  ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+┌─ INTERCEPTION LAYER ─────────────────────────────────────────────────────────┐
+│                                                                               │
+│  Agent Code calls one of three interception points:                          │
+│                                                                               │
+│    1. govern.guard(boto3_client, service="s3")                               │
+│       └─> wraps SDK client, intercepts method calls                          │
+│                                                                               │
+│    2. @govern.guarded("db:DropTable", resource=...)                          │
+│       └─> decorator on tool functions agents can call                        │
+│                                                                               │
+│    3. govern.run("terraform apply -auto-approve")                            │
+│       └─> replaces subprocess.run                                            │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─ POLICY ENGINE (Governor.evaluate) ──────────────────────────────────────────┐
+│                                                                               │
+│  1. PER-CALL RULES                                                            │
+│     └─> Glob-match (action, resource, environment)                           │
+│         Precedence: deny > require_approval > allow                          │
+│                                                                               │
+│  2. CHAIN-AWARE RULES (if enabled)                                           │
+│     └─> Same action, different outcome based on what preceded it             │
+│         E.g., "if terraform just ran, require approval for s3:Delete"        │
+│         (in-memory, Phase 1 only)                                            │
+│                                                                               │
+│  3. AGGREGATE RULES (if enabled)                                             │
+│     └─> Cross-agent thresholds: "N distinct agents touched resource X"       │
+│         "M total calls to resource Y within time window"                      │
+│         Effect: alert (log it) or deny (block the call)                      │
+│                                                                               │
+│  4. APPROVAL HANDLER (if require_approval matched)                           │
+│     └─> Synchronous: call approval handler, get yes/no immediately          │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─ DECISION ───────────────────────────────────────────────────────────────────┐
+│                                                                               │
+│  ENFORCE MODE (default)          MONITOR MODE                                │
+│  ─────────────────────           ────────────                                │
+│  ALLOW  ──> action proceeds      ALLOW  ──> action proceeds                  │
+│  BLOCK  ──> raise PolicyViolation BLOCK  ──> log it, but let it proceed      │
+│  APPROVE──> action proceeds      APPROVE──> action proceeds                  │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─ AUDIT LOG (.govern/audit.jsonl) ────────────────────────────────────────────┐
+│                                                                               │
+│  Every decision recorded as JSON:                                            │
+│  {                                                                            │
+│    "action": "s3:DeleteBucket",                                              │
+│    "resource": "prod-backup",                                                │
+│    "allowed": false,                                                         │
+│    "rule_id": "deny-destructive-prod",                                       │
+│    "agent_id": "cost-optimizer",                                             │
+│    "timestamp": 1704067200.5,                                                │
+│    ...                                                                       │
+│  }                                                                            │
+│                                                                               │
+│  Policy decisions also available to:                                         │
+│  - Dashboard: live activity feed, timeline, per-agent summary               │
+│  - CLI: govern log, govern agent list/inspect                               │
+│  - Policy Simulate: replay history through candidate policies                │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+KEY INSIGHT
+───────────
+Unlike per-call policy engines, govern uniquely catches:
+
+  • Cross-agent coordination: 5 agents each reading different data shards
+    (aggregate_rules: distinct_agents threshold)
+
+  • Temporal coordination: terraform runs, then s3:Delete within 5 minutes
+    (chain_rules: same action, different outcome based on chain context)
+
+Policy is data (YAML). govern.yaml lives in your repo and is version-controlled.
+"""
+
+    mermaid_diagram = """\
+graph TD
+    A["Agent Code<br/>(calls API, tool, subprocess)"] -->|Interception| B["Wrapping Layer<br/>(guard/guarded/run)"]
+    B -->|Extract action,<br/>resource, environment| C["Governor.evaluate()"]
+
+    C -->|1| D1["Per-Call Rules<br/>(YAML-driven)"]
+    C -->|2| D2["Chain-Aware Rules<br/>(if previous action in window)"]
+    C -->|3| D3["Aggregate Rules<br/>(cross-agent thresholds)"]
+
+    D1 -->|Glob-match<br/>Precedence: deny > require_approval > allow| E["Rule Matched?"]
+    D2 -->|Pattern + time window| E
+    D3 -->|Threshold check| E
+
+    E -->|require_approval| F["Call Approval<br/>Handler"]
+    F -->|Sync resolution| G{Mode?}
+    E -->|allow/deny| G
+
+    G -->|enforce| H1["ALLOW: proceed"]
+    G -->|enforce| H2["DENY: raise<br/>PolicyViolation"]
+    G -->|monitor| H3["ALLOW: proceed<br/>(logged as blocked)"]
+    G -->|monitor| H4["BLOCK: proceed<br/>(logged as blocked)"]
+
+    H1 -->|Record decision| I["Audit Log<br/>(.govern/audit.jsonl)"]
+    H2 -->|Record decision| I
+    H3 -->|Record decision| I
+    H4 -->|Record decision| I
+
+    I -->|Read-only tailing| J1["Dashboard"]
+    I -->|Replay via| J2["policy simulate"]
+    I -->|CLI access| J3["govern log"]
+
+    style A fill:#e1f5ff
+    style C fill:#fff3e0
+    style D1 fill:#f3e5f5
+    style D2 fill:#f3e5f5
+    style D3 fill:#f3e5f5
+    style G fill:#e8f5e9
+    style I fill:#fce4ec
+"""
+
+    if args.format == "mermaid":
+        print(mermaid_diagram)
+        print("\nTo visualize: copy the above into https://mermaid.live")
+    else:  # ascii (default)
+        # Use sys.stdout.buffer for proper Unicode handling on Windows
+        sys.stdout.buffer.write(ascii_diagram.encode('utf-8'))
+        sys.stdout.buffer.flush()
+
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="govern",
@@ -570,6 +711,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_agent_inspect.add_argument("agent_id")
     _add_output_flag(p_agent_inspect)
     p_agent_inspect.set_defaults(func=cmd_agent_inspect)
+
+    p_show = sub.add_parser("show", help="show architecture and reference information")
+    show_sub = p_show.add_subparsers(dest="show_command", required=True)
+
+    p_show_architecture = show_sub.add_parser(
+        "architecture", help="display how govern's policy enforcement works"
+    )
+    p_show_architecture.add_argument(
+        "--format", choices=("ascii", "mermaid"), default="ascii",
+        help="output format (default: ascii)"
+    )
+    p_show_architecture.set_defaults(func=cmd_show_architecture)
 
     p_completion = sub.add_parser("completion", help="print a shell completion script")
     p_completion.add_argument("shell", choices=("bash", "zsh"))
