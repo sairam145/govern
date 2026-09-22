@@ -1,0 +1,153 @@
+# AWS Production Safety Policy
+#
+# High-level guardrails for agents operating on AWS production infrastructure.
+# Focus: prevent destructive operations on production databases, backups, and billing.
+
+version: 1
+default_effect: deny
+
+rules:
+  # ALWAYS ALLOWED
+  - id: allow-read-only
+    effect: allow
+    severity: info
+    description: Read-only operations are safe by default.
+    actions:
+      - "*:Get*"
+      - "*:List*"
+      - "*:Describe*"
+      - "*:Head*"
+      - "*:Read*"
+      - "*:Fetch*"
+    resources: ["*"]
+    environments: ["*"]
+
+  # PRODUCTION SPECIFIC
+  - id: allow-nonprod-writes
+    effect: allow
+    severity: low
+    description: Agents can write freely in dev/staging/test environments.
+    actions: ["*"]
+    resources: ["*"]
+    environments:
+      - development
+      - dev
+      - staging
+      - test
+      - sandbox
+      - pre-prod
+
+  # PRODUCTION WRITES (requires approval)
+  - id: require-approval-prod-writes
+    effect: require_approval
+    severity: medium
+    description: Any production mutation requires human approval.
+    actions:
+      - "*:Create*"
+      - "*:Update*"
+      - "*:Put*"
+      - "*:Post*"
+      - "*:Modify*"
+      - "*:Scale*"
+    resources: ["*"]
+    environments: ["production", "prod"]
+
+  # ALWAYS DENY: DESTRUCTIVE OPERATIONS
+  - id: deny-production-delete
+    effect: deny
+    severity: critical
+    description: Never delete production resources without explicit approval outside of policy.
+    actions:
+      - "*:Delete*"
+      - "*:Destroy*"
+      - "*:Terminate*"
+      - "*:Remove*"
+      - "*:Drop*"
+      - "*:Purge*"
+    resources: ["*"]
+    environments: ["production", "prod"]
+
+  # DATABASE SAFETY
+  - id: deny-database-drops
+    effect: deny
+    severity: critical
+    description: Prevent dropping databases, tables, or schemas anywhere.
+    actions:
+      - "rds:DeleteDBInstance"
+      - "rds:DeleteDBCluster"
+      - "dynamodb:DeleteTable"
+      - "redshift:DeleteCluster"
+      - "*:DropDatabase"
+      - "*:DropTable"
+      - "*:DropSchema"
+      - "*:TruncateTable"
+    resources: ["*"]
+    environments: ["*"]
+
+  # BACKUP PROTECTION
+  - id: deny-backup-deletion
+    effect: deny
+    severity: critical
+    description: Prevent deleting backups or snapshots (they are your recovery plan).
+    actions:
+      - "*:DeleteSnapshot*"
+      - "*:DeleteBackup*"
+      - "rds:DeleteDBSnapshot"
+      - "rds:DeleteDBClusterSnapshot"
+      - "ec2:DeleteSnapshot"
+      - "s3:DeleteBucket"
+    resources:
+      - "*backup*"
+      - "*snapshot*"
+      - "*recovery*"
+    environments: ["*"]
+
+  # IDENTITY & SECURITY
+  - id: deny-iam-privilege-escalation
+    effect: deny
+    severity: critical
+    description: Privilege escalation is not allowed for agents.
+    actions:
+      - "iam:*"
+      - "sts:AssumeRole"
+      - "*:AttachPolicy"
+      - "*:AttachUserPolicy"
+      - "*:AttachRolePolicy"
+      - "*:PutRolePolicy"
+      - "*:PutUserPolicy"
+      - "*:CreateAccessKey"
+      - "*:CreateUser"
+      - "*:CreateRole"
+    resources: ["*"]
+    environments: ["*"]
+
+  # BILLING & COST
+  - id: deny-account-closure
+    effect: deny
+    severity: critical
+    description: Prevent closing AWS accounts.
+    actions:
+      - "aws:CloseAccount"
+      - "organizations:LeaveOrganization"
+    resources: ["*"]
+    environments: ["*"]
+
+  # SHELL SAFETY
+  - id: deny-shell-footguns
+    effect: deny
+    severity: critical
+    description: Block dangerous shell patterns.
+    actions: ["shell:exec"]
+    resources:
+      - "*rm -rf*"
+      - "*mkfs*"
+      - "*dd if=*of=/dev/*"
+      - "*:(){ :|:& };:*"
+      - "*>/dev/null 2>&1 &*"
+    environments: ["*"]
+
+# Cross-agent safeguards (if enabled)
+aggregate_rules: []
+
+# Chain-aware safeguards (if enabled)
+chain_rules: []

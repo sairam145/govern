@@ -15,12 +15,31 @@ from .policy import Policy, PolicyError, parse_duration
 def cmd_init(args: argparse.Namespace) -> int:
     target = Path(args.path)
     if target.exists() and not args.force:
-        print(f"{target} already exists (use --force to overwrite)")
+        print(f"[govern] {target} already exists (use --force to overwrite)")
         return 1
     bundled = Path(__file__).parent / "policies" / "default.yaml"
     shutil.copyfile(bundled, target)
-    print(f"wrote starter policy to {target}")
-    print("edit it, commit it, then run:  govern check s3:DeleteBucket prod-billing --env production")
+
+    # Create .govern directory if it doesn't exist (for audit log)
+    govern_dir = Path(".govern")
+    if not govern_dir.exists():
+        govern_dir.mkdir(exist_ok=True)
+
+    print(f"\n[govern] Starter policy written to {target}\n")
+    print("NEXT STEPS:")
+    print("=" * 50)
+    print(f"1. Review the policy:")
+    print(f"   cat {target}")
+    print(f"\n2. Test a specific action:")
+    print(f"   govern check s3:DeleteBucket prod-billing --env production")
+    print(f"\n3. Try the demo (blocks on policy violations):")
+    print(f"   govern demo")
+    print(f"\n4. See the full architecture:")
+    print(f"   govern show architecture")
+    print(f"\n5. Once ready, commit it:")
+    print(f"   git add {target} .govern/")
+    print(f"   git commit -m 'Initialize govern policy'")
+    print("=" * 50 + "\n")
     return 0
 
 
@@ -447,6 +466,100 @@ _govern""")
     return 0
 
 
+def cmd_status(args: argparse.Namespace) -> int:
+    """Show the current govern status and health overview."""
+    try:
+        policy = Policy.discover()
+    except PolicyError:
+        policy = None
+
+    path = Path(args.audit_log) if args.audit_log else default_audit_path()
+
+    from .fleet import build_fleet
+
+    print("\n╔════════════════════════════════════════════════════════════╗")
+    print("║               GOVERN STATUS & HEALTH OVERVIEW               ║")
+    print("╚════════════════════════════════════════════════════════════╝\n")
+
+    # Policy info
+    if policy:
+        print("POLICY")
+        print("─" * 60)
+        print(f"  Source:       {policy.source}")
+        print(f"  Rules:        {len(policy.rules)} per-call rules")
+        if policy.aggregate_rules:
+            print(f"  Aggregate:    {len(policy.aggregate_rules)} cross-agent rules")
+        if policy.chain_rules:
+            print(f"  Chain-aware:  {len(policy.chain_rules)} coordinated-action rules")
+        print(f"  Default:      {policy.default_effect}")
+        print()
+    else:
+        print("POLICY")
+        print("─" * 60)
+        print("  ✗ No policy found")
+        print("    Run 'govern init' to create one")
+        print()
+
+    # Audit log info
+    print("AUDIT LOG")
+    print("─" * 60)
+    if path.exists():
+        entries = path.read_text(encoding="utf-8").strip().splitlines()
+        print(f"  Location:     {path}")
+        print(f"  Total entries: {len(entries)}")
+
+        fleet = build_fleet(path)
+        if fleet:
+            print(f"  Agents seen:  {len(fleet)}")
+
+            # Summary stats
+            total_actions = sum(r.total for r in fleet.values())
+            total_blocked = sum(r.blocked for r in fleet.values())
+            block_rate = (total_blocked / total_actions * 100) if total_actions else 0
+
+            print(f"  Total actions: {total_actions}")
+            print(f"  Blocked:      {total_blocked} ({block_rate:.1f}%)")
+
+            # Recent blocked actions
+            import json
+            blocked_entries = []
+            for line in reversed(entries[-100:]):  # check last 100 entries
+                try:
+                    entry = json.loads(line)
+                    if not entry.get("allowed") and not entry.get("alert_type"):
+                        blocked_entries.append(entry)
+                except:
+                    pass
+
+            if blocked_entries:
+                print(f"\n  Recent blocks (last 5):")
+                for entry in blocked_entries[:5]:
+                    rule = entry.get("rule_id", "unknown")
+                    action = entry.get("action", "?")
+                    agent = entry.get("agent_id", "?")
+                    print(f"    • {action} by {agent} (rule: {rule})")
+        else:
+            print(f"  Location:     {path}")
+            print(f"  Status:       empty (no activity yet)")
+    else:
+        print(f"  Location:     {path}")
+        print(f"  Status:       not found (run 'govern demo' to generate activity)")
+
+    print("\n" + "─" * 60)
+    print("NEXT STEPS")
+    print("─" * 60)
+    if not policy:
+        print("  1. Create a policy:     govern init")
+    print("  • Review logs:          govern log")
+    print("  • See agents:           govern agent list")
+    print("  • Run the demo:         govern demo")
+    print("  • Start dashboard:      govern dashboard")
+    print("  • Test a rule:          govern check <action> <resource>")
+    print("─" * 60 + "\n")
+
+    return 0
+
+
 def cmd_show_architecture(args: argparse.Namespace) -> int:
     """Display how govern's policy enforcement architecture works."""
 
@@ -711,6 +824,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_agent_inspect.add_argument("agent_id")
     _add_output_flag(p_agent_inspect)
     p_agent_inspect.set_defaults(func=cmd_agent_inspect)
+
+    p_status = sub.add_parser("status", help="show governor status and health overview")
+    p_status.set_defaults(func=cmd_status)
 
     p_show = sub.add_parser("show", help="show architecture and reference information")
     show_sub = p_show.add_subparsers(dest="show_command", required=True)

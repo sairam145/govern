@@ -1,0 +1,172 @@
+# Database Safety Policy
+#
+# Protections for agents operating on databases.
+# Focus: prevent data loss, protect sensitive data, ensure consistency.
+
+version: 1
+default_effect: deny
+
+rules:
+  # ALWAYS ALLOWED: READ
+  - id: allow-read-only
+    effect: allow
+    severity: info
+    description: Read-only queries are safe.
+    actions:
+      - "sql:Select"
+      - "sql:Describe"
+      - "sql:Show"
+      - "db:Query"
+      - "db:Get*"
+      - "db:List*"
+      - "db:Describe*"
+      - "postgres:Query"
+      - "mysql:Query"
+      - "mongodb:Find*"
+    resources: ["*"]
+    environments: ["*"]
+
+  # NON-PRODUCTION: PERMISSIVE
+  - id: allow-all-nonprod
+    effect: allow
+    severity: low
+    description: Agents can do anything in dev/test databases.
+    actions: ["*"]
+    resources: ["*"]
+    environments:
+      - development
+      - dev
+      - test
+      - staging
+      - sandbox
+
+  # PRODUCTION: REQUIRE APPROVAL FOR WRITES
+  - id: require-approval-prod-insert-update
+    effect: require_approval
+    severity: medium
+    description: Production data modifications need human approval.
+    actions:
+      - "sql:Insert"
+      - "sql:Update"
+      - "sql:UpsertOrInsert"
+      - "db:Put*"
+      - "db:Create*"
+      - "db:Update*"
+      - "mongodb:InsertOne"
+      - "mongodb:UpdateOne"
+    resources: ["*"]
+    environments: ["production", "prod"]
+
+  # DENY: DELETE PRODUCTION DATA
+  - id: deny-production-delete-rows
+    effect: deny
+    severity: critical
+    description: Deleting production data is too dangerous for agents.
+    actions:
+      - "sql:Delete"
+      - "sql:Truncate"
+      - "db:Delete*"
+      - "db:Clear*"
+      - "mongodb:DeleteOne"
+      - "mongodb:DeleteMany"
+    resources: ["*"]
+    environments: ["production", "prod"]
+
+  # DENY: DROP DATABASES/TABLES
+  - id: deny-drop-database-or-table
+    effect: deny
+    severity: critical
+    description: Dropping databases or tables is unrecoverable data loss.
+    actions:
+      - "sql:DropDatabase"
+      - "sql:DropTable"
+      - "sql:DropSchema"
+      - "sql:DropIndex"
+      - "db:DropDatabase"
+      - "db:DropTable"
+      - "postgresql:DropDatabase"
+      - "mysql:DropDatabase"
+      - "mongodb:DropDatabase"
+      - "mongodb:DropCollection"
+    resources: ["*"]
+    environments: ["*"]
+
+  # DENY: ALTER SCHEMA STRUCTURE
+  - id: deny-alter-table-structure
+    effect: deny
+    severity: critical
+    description: Schema changes require explicit database admin approval.
+    actions:
+      - "sql:AlterTable"
+      - "sql:AlterDatabase"
+      - "sql:AlterSchema"
+      - "sql:RenameTable"
+      - "sql:RenameColumn"
+      - "db:Alter*"
+    resources: ["*"]
+    environments: ["production", "prod"]
+
+  # DENY: EXPORT SENSITIVE DATA
+  - id: deny-bulk-export-pii
+    effect: deny
+    severity: critical
+    description: Prevent bulk exporting of customer data or PII.
+    actions:
+      - "db:Export*"
+      - "db:Dump*"
+      - "sql:Select*IntoOutfile"
+    resources:
+      - "*customer*"
+      - "*pii*"
+      - "*personal*"
+      - "*sensitive*"
+    environments: ["production", "prod"]
+
+  # DENY: CHANGE PERMISSIONS/USERS
+  - id: deny-privilege-escalation
+    effect: deny
+    severity: critical
+    description: Agents cannot create users or grant elevated permissions.
+    actions:
+      - "sql:CreateUser"
+      - "sql:CreateRole"
+      - "sql:GrantPermission*"
+      - "sql:AlterUser"
+      - "db:CreateUser"
+      - "db:GrantPermission*"
+      - "postgresql:CreateRole"
+      - "mysql:GrantPrivilege*"
+    resources: ["*"]
+    environments: ["*"]
+
+  # DENY: DANGEROUS QUERY PATTERNS
+  - id: deny-unbounded-queries
+    effect: deny
+    severity: high
+    description: Prevent SELECT * on large tables without LIMIT (can cause downtime).
+    actions: ["sql:Select", "db:Query"]
+    resources:
+      - "*events*"
+      - "*logs*"
+      - "*audit_trail*"
+      - "*transactions*"
+    environments: ["production", "prod"]
+
+  # DENY: BACKUP/RESTORE WITHOUT APPROVAL
+  - id: deny-backup-restore-prod
+    effect: deny
+    severity: critical
+    description: Backup/restore operations on production need explicit approval.
+    actions:
+      - "db:Backup*"
+      - "db:Restore*"
+      - "sql:Backup*"
+      - "sql:Restore*"
+    resources: ["*"]
+    environments: ["production", "prod"]
+
+# Cross-agent safeguards
+aggregate_rules: []
+
+# Chain-aware safeguards
+chain_rules: []

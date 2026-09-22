@@ -1,0 +1,154 @@
+# Kubernetes Cluster Guardrails Policy
+#
+# Safety rules for agents managing Kubernetes clusters.
+# Focus: prevent cluster-wide disruptions, privilege escalation, and data loss.
+
+version: 1
+default_effect: deny
+
+rules:
+  # READ-ONLY: always allowed
+  - id: allow-read-operations
+    effect: allow
+    severity: info
+    description: Read-only operations on Kubernetes are safe.
+    actions:
+      - "k8s:Get*"
+      - "k8s:List*"
+      - "k8s:Watch*"
+      - "k8s:Describe*"
+      - "kubectl:Get*"
+      - "kubectl:List*"
+      - "kubectl:Watch*"
+      - "kubectl:Describe*"
+    resources: ["*"]
+    environments: ["*"]
+
+  # NON-PRODUCTION: permissive
+  - id: allow-nonprod-mutations
+    effect: allow
+    severity: low
+    description: Free mutations in dev, staging, and test clusters.
+    actions: ["*"]
+    resources: ["*"]
+    environments:
+      - development
+      - dev
+      - staging
+      - test
+      - sandbox
+
+  # PRODUCTION: require approval for mutations
+  - id: require-approval-prod-changes
+    effect: require_approval
+    severity: medium
+    description: Production cluster changes need human approval.
+    actions:
+      - "k8s:Create*"
+      - "k8s:Update*"
+      - "k8s:Patch*"
+      - "k8s:Apply*"
+      - "kubectl:Apply*"
+      - "kubectl:Create*"
+      - "kubectl:Update*"
+    resources: ["*"]
+    environments: ["production", "prod"]
+
+  # DENY: CLUSTER-WIDE DISRUPTION
+  - id: deny-node-drain
+    effect: deny
+    severity: critical
+    description: Draining nodes without explicit approval can cause downtime.
+    actions:
+      - "k8s:Drain"
+      - "kubectl:Drain"
+      - "k8s:DeleteNode"
+      - "k8s:CordonNode"
+    resources: ["*"]
+    environments: ["production", "prod"]
+
+  # DENY: DELETE PRODUCTION RESOURCES
+  - id: deny-production-deletions
+    effect: deny
+    severity: critical
+    description: Prevent deleting production deployments, statefulsets, or namespaces.
+    actions:
+      - "k8s:Delete*"
+      - "kubectl:Delete*"
+    resources:
+      - "*default*"
+      - "*kube-system*"
+      - "*prod*"
+      - "*production*"
+    environments: ["production", "prod"]
+
+  # DENY: RBAC PRIVILEGE ESCALATION
+  - id: deny-rbac-escalation
+    effect: deny
+    severity: critical
+    description: Agents cannot grant cluster-admin or modify RBAC.
+    actions:
+      - "k8s:CreateClusterRole"
+      - "k8s:CreateClusterRoleBinding"
+      - "k8s:UpdateClusterRole"
+      - "k8s:UpdateClusterRoleBinding"
+      - "k8s:CreateRole"
+      - "k8s:CreateRoleBinding"
+      - "k8s:UpdateRole"
+      - "k8s:UpdateRoleBinding"
+      - "kubectl:*Role*"
+    resources: ["cluster-admin", "*-admin"]
+    environments: ["*"]
+
+  # DENY: DANGEROUS EXEC/ATTACH
+  - id: deny-exec-production-pods
+    effect: deny
+    severity: critical
+    description: Prevent exec into production pods (potential data access).
+    actions:
+      - "k8s:Exec"
+      - "k8s:Attach"
+      - "kubectl:Exec"
+      - "kubectl:Attach"
+    resources: ["*"]
+    environments: ["production", "prod"]
+
+  # DENY: NAMESPACE ISOLATION BREAKS
+  - id: deny-network-policy-deletion
+    effect: deny
+    severity: critical
+    description: Deleting network policies can break security boundaries.
+    actions:
+      - "k8s:DeleteNetworkPolicy"
+      - "kubectl:Delete*NetworkPolicy*"
+    resources: ["*"]
+    environments: ["production", "prod"]
+
+  # DENY: ETCD/STORAGE DANGEROUS OPERATIONS
+  - id: deny-etcd-snapshot
+    effect: deny
+    severity: critical
+    description: Backup/snapshot operations should not be automated by agents.
+    actions:
+      - "k8s:SnapshotEtcd"
+      - "k8s:RestoreEtcd"
+      - "kubectl:SnapshotEtcd"
+    resources: ["*"]
+    environments: ["production", "prod"]
+
+  # DENY: CLUSTER SCALING WITHOUT BOUNDS
+  - id: require-approval-scale-nodes
+    effect: require_approval
+    severity: high
+    description: Node scaling changes need approval to prevent cost overruns.
+    actions:
+      - "k8s:ScaleNode*"
+      - "k8s:UpdateNodePool"
+    resources: ["*"]
+    environments: ["production", "prod"]
+
+# Cross-agent safeguards
+aggregate_rules: []
+
+# Chain-aware safeguards
+chain_rules: []
